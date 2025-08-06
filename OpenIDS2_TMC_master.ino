@@ -6,58 +6,50 @@
 
 String command;
 bool is_init;
-#define limit1 A1
-#define limit2 A0
 
 #define limit_1_position 0
 #define limit_2_position 3200
 #define max_position 10000
 #define Airpressure_arduino 1
-#define OXI_pulse 2
-#define wash_pulse 3
-#define DET_pulse 4
-#define linear_pulse 5
-#define waste_pulse 6
-#define DIR 7
+#define bulk_step
+#define waste_step
+#define auto_step
+#define DIR
 #define OXI_E 8
 #define wash_E 9
 #define DET_E 10
 #define linear_E 11
 #define waste_E 12
 #define valve 13
-#define waste_TX 14   // Arduino TX → TMC2209 RX
-#define waste_RX 15   // Arduino RX → TMC2209 TX
-#define linear_TX 16     // Arduino TX → TMC2209 RX
-#define linear_RX 17   // Arduino RX → TMC2209 TX
-#define bulk_TX 18   // Arduino TX → TMC2209 RX
-#define bulk_RX 19   // Arduino RX → TMC2209 TX
+
+#define bulk_TMC_ADDR 0b00 //(MS2: LOW, MS1: LOW)
+#define linear_TMC_ADDR 0b01 //(MS2: GND, MS1: HIGH)
 
 #define R_SENSE 0.11f      // 측정저항 값 (기본 0.11Ω)
+attachInterrupt(digitalPinToInterrupt(SENSOR_PIN), stopMotorISR, FALLING);
+attachInterrupt(digitalPinToInterrupt(SENSOR_PIN), stopMotorISR, FALLING);
+volatile bool limit_L_Flag = false;
+volatile bool limit_R_Flag = false;
+
 int accel = 10000;
 int TMCmaxSpeed = 4000;
-#define TMC2209_ADDR 0b00  // 기본 주소 (A1, A2 핀 둘 다 GND일 경우)
-
-SoftwareSerial bulk_TMCSerial(bulk_RX, bulk_TX);
-SoftwareSerial linear_TMCSerial(linear_RX, linear_TX);
-SoftwareSerial waste_TMCSerial(waste_RX, waste_TX);
-
-TMC2209Stepper bulk_TMCdriver(&bulk_TMCSerial, R_SENSE, TMC2209_ADDR);
-TMC2209Stepper linear_TMCdriver(&linear_TMCSerial, R_SENSE, TMC2209_ADDR);
-TMC2209Stepper waste_TMCdriver(&waste_TMCSerial, R_SENSE, TMC2209_ADDR);
-
-AccelStepper OXI_stepper(AccelStepper::DRIVER, OXI_pulse, DIR);
-AccelStepper wash_stepper(AccelStepper::DRIVER, wash_pulse, DIR);
-AccelStepper DET_stepper(AccelStepper::DRIVER, DET_pulse, DIR);
-AccelStepper linear_stepper(AccelStepper::DRIVER, linear_pulse, DIR);
-AccelStepper waste_stepper1(AccelStepper::DRIVER, waste_pulse, DIR);
-AccelStepper waste_stepper2(AccelStepper::DRIVER, 22, DIR);
 
 
-void waste_stepper2_run(){
-  //waste_stepper2.runSpeed();
-  digitalWrite(22,HIGH);
-  digitalWrite(22,LOW);
 
+TMC2209Stepper bulk_TMCdriver(&Serial1, R_SENSE, bulk_TMC_ADDR);
+TMC2209Stepper linear_TMCdriver(&Serial1, R_SENSE, linear_TMC_ADDR);
+
+AccelStepper OXI_stepper(AccelStepper::DRIVER, step, DIR);
+AccelStepper wash_stepper(AccelStepper::DRIVER, step, DIR);
+AccelStepper DET_stepper(AccelStepper::DRIVER, step, DIR);
+AccelStepper linear_stepper(AccelStepper::DRIVER, step, DIR);
+AccelStepper waste_stepper1(AccelStepper::DRIVER, step, DIR);
+AccelStepper waste_stepper2(AccelStepper::DRIVER, auto_step, DIR);
+
+
+void waste_stepper2_auto_run(){
+  digitalWrite(auto_step,HIGH);
+  digitalWrite(auto_step,LOW);
 }
 
 
@@ -101,6 +93,8 @@ void setup() {
   for (int i=2; i<25; i++){
     pinMode(i,OUTPUT);  
   }
+
+
   
   OXI_stepper.setAcceleration(15000);
   wash_stepper.setAcceleration(15000);
@@ -118,10 +112,8 @@ void setup() {
   waste_stepper2.setSpeed(1000);
 
   Wire.begin(1);
-  Serial.begin(9600);
-  bulk_TMCSerial.begin(115200);
-  linear_TMCSerial.begin(115200);
-  waste_TMCSerial.begin(115200);
+  Serial.begin(9600); // TX:1, RX: 0
+  Serial1.begin(115200);   // TX: D18 (TMC_TX), RX: D19
 
   bulk_TMCdriver.begin();                                                                                                                                                                                                                                                                                                                            // UART: Init SW UART (if selected) with default 115200 baudrate
   bulk_TMCdriver.toff(5);                 // Enables driver in software
@@ -152,7 +144,7 @@ Serial.println(bulk_TMCdriver.microsteps());  // 확인용
   //TMCdriver.pwm_autoscale(true);     // Needed for stealthChop
 
   Timer1.initialize(2000);
-  Timer1.attachInterrupt(waste_stepper2_run);
+  Timer1.attachInterrupt(waste_stepper2_auto_run);
 
   digitalWrite(linear_E, HIGH);
   digitalWrite(wash_E, HIGH);
@@ -479,3 +471,4 @@ void I2C_wait(){
     delay(100);
   }
 }
+
