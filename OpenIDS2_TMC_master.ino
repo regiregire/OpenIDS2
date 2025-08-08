@@ -26,65 +26,76 @@ bool is_init;
 #define linear_TMC_ADDR 0b01 //(MS2: GND, MS1: HIGH)
 
 #define R_SENSE 0.11f      // 측정저항 값 (기본 0.11Ω)
-attachInterrupt(digitalPinToInterrupt(SENSOR_PIN), stopMotorISR, FALLING);
-attachInterrupt(digitalPinToInterrupt(SENSOR_PIN), stopMotorISR, FALLING);
+attachInterrupt(digitalPinToInterrupt(limit_L), limit_L_home, RISING);
+attachInterrupt(digitalPinToInterrupt(limit_R), limit_R_home, RISING);
 volatile bool limit_L_Flag = false;
 volatile bool limit_R_Flag = false;
 
 int accel = 10000;
 int TMCmaxSpeed = 4000;
-
+int linear_position;
 
 
 TMC2209Stepper bulk_TMCdriver(&Serial1, R_SENSE, bulk_TMC_ADDR);
 TMC2209Stepper linear_TMCdriver(&Serial1, R_SENSE, linear_TMC_ADDR);
 
-AccelStepper OXI_stepper(AccelStepper::DRIVER, step, DIR);
-AccelStepper wash_stepper(AccelStepper::DRIVER, step, DIR);
-AccelStepper DET_stepper(AccelStepper::DRIVER, step, DIR);
-AccelStepper linear_stepper(AccelStepper::DRIVER, step, DIR);
-AccelStepper waste_stepper1(AccelStepper::DRIVER, step, DIR);
-AccelStepper waste_stepper2(AccelStepper::DRIVER, auto_step, DIR);
-
+AccelStepper bulk_step_motor(AccelStepper::DRIVER, Mega_step, DIR);
+AccelStepper linear_step_motor(AccelStepper::DRIVER, Mega_step, DIR);
 
 void waste_stepper2_auto_run(){
   digitalWrite(auto_step,HIGH);
   digitalWrite(auto_step,LOW);
 }
 
+void limit_L_home() {
+  limit_L_Flag = true;
+}
 
-void x_init(){
+void limit_R_home() {
+  limit_R_Flag = true;
+}
 
+
+void linear_init(){
+  limit_L_Flag = false;
+  limit_R_Flag = false;
+  
   digitalWrite(linear_E, LOW);
-  linear_stepper.setCurrentPosition(0);
-  linear_stepper.setMaxSpeed(1000);
-  linear_stepper.moveTo(-max_position);
+  linear_step_motor.setMaxSpeed(1000);
+  linear_step_motor.move(-max_position);
 
-  while(analogRead(limit1)<800&&analogRead(limit2)<800){
-    linear_stepper.run();
+  while(!limit_L_Flag&&!limit_R_Flag){
+    linear_step_motor.run();
   }
-  linear_stepper.setCurrentPosition(0);
-  linear_stepper.moveTo(100);
-  linear_stepper.runToPosition();
-  linear_stepper.setMaxSpeed(100);
-  linear_stepper.moveTo(-1000);
-  while(analogRead(limit1)<800&&analogRead(limit2)<800){ 
-    linear_stepper.run();
+  linear_step_motor.stop();
+  while (linear_step_motor.isRunning()) {
+  linear_step_motor.run();
   }
 
-  if (analogRead(limit1)>800){
-    linear_stepper.setCurrentPosition(limit_1_position);
+  linear_step_motor.move(200);
+  linear_step_motor.runToPosition();
+  linear_step_motor.setMaxSpeed(100);
+  linear_step_motor.move(-1000);
+  
+  while(!limit_L_Flag&&!limit_R_Flag){
+    linear_step_motor.run();
+  }
+  linear_step_motor.stop();
+  while (linear_step_motor.isRunning()) {
+  linear_step_motor.run();
+  }
+
+  if (limit_L_Flag{
+    linear_step_motor.setCurrentPosition(limit_1_position);
 
   }
 
-  if (analogRead(limit2)>800){
-    linear_stepper.setCurrentPosition(limit_2_position);
+  if (limit_R_Flag){
+    linear_step_motor.setCurrentPosition(limit_2_position);
 
   }
-  linear_stepper.setMaxSpeed(2000);
+  linear_step_motor.setMaxSpeed(2000);
   digitalWrite(linear_E, HIGH);
-  is_init = true;
-
 }
 
 
@@ -152,7 +163,8 @@ Serial.println(bulk_TMCdriver.microsteps());  // 확인용
   digitalWrite(DET_E, HIGH);
   digitalWrite(OXI_E, HIGH);
 
-   
+  linear_init();
+  
 }
 
 void loop() {
@@ -471,4 +483,5 @@ void I2C_wait(){
     delay(100);
   }
 }
+
 
