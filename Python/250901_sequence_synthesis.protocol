@@ -1,0 +1,12 @@
+wash	10	0
+detritylation	10	60
+wash	10	0
+blow	0	0
+coupling	0.8	60
+wash	10	0
+oxidation	5	60
+wash	10	0
+blow	0	0
+coupling	0.8	60
+wash	10	0
+oxidation	5	60

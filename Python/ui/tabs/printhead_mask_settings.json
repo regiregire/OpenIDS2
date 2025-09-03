@@ -1,0 +1,14 @@
+{
+  "y_scale_px": 471,
+  "well_size_px": 3,
+  "multipler_m": 4,
+  "offsets": {
+    "ACT": 0,
+    "A": 0,
+    "T": 0,
+    "G": 0,
+    "C": 0
+  },
+  "base_output_dir": "C:/Users/junhyeong/Desktop/KJH/inkjet DNA synthesizer_OpenIDS/OpenIDS2",
+  "project_name": "out"
+}
