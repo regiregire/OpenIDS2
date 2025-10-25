@@ -1,0 +1,22 @@
+{
+  "y_step_interval": 22,
+  "injection_amount": 1,
+  "start_position": 123,
+  "multipler_m": 2,
+  "offsets_x": {
+    "A": 6,
+    "T": 6,
+    "G": 8,
+    "C": 8,
+    "ACT": 6
+  },
+  "offsets_y": {
+    "A": 1080,
+    "T": 720,
+    "G": 362,
+    "C": 0,
+    "ACT": 1445
+  },
+  "base_output_dir": "../Data",
+  "project_name": "test_sequence"
+}

@@ -15,10 +15,10 @@ class ProtocolTab(QtWidgets.QWidget):
         self.table.horizontalHeader().setStretchLastSection(True)
         v.addWidget(self.table)
         hb = QtWidgets.QHBoxLayout()
-        self.btn_add = QtWidgets.QPushButton("행 추가")
-        self.btn_del = QtWidgets.QPushButton("행 삭제")
-        self.btn_load = QtWidgets.QPushButton("불러오기…")
-        self.btn_save = QtWidgets.QPushButton("저장…")
+        self.btn_add = QtWidgets.QPushButton("Add Row")
+        self.btn_del = QtWidgets.QPushButton("Delete Row")
+        self.btn_load = QtWidgets.QPushButton("Load...")
+        self.btn_save = QtWidgets.QPushButton("Save...")
         hb.addWidget(self.btn_add); hb.addWidget(self.btn_del); hb.addStretch(1); hb.addWidget(self.btn_load); hb.addWidget(self.btn_save)
         v.addLayout(hb)
         self.btn_add.clicked.connect(self._add)
@@ -32,7 +32,7 @@ class ProtocolTab(QtWidgets.QWidget):
         r = self.table.currentRow()
         if r >= 0: self.table.removeRow(r)
     def _load(self):
-        fn, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Protocol 불러오기", os.getcwd(), "*.protocol;;All (*.*)")
+        fn, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Load Protocol", os.getcwd(), "*.protocol;;All (*.*)")
         if not fn: return
         rows = []
         with open(fn, 'r', encoding='utf-8') as f:
@@ -43,7 +43,7 @@ class ProtocolTab(QtWidgets.QWidget):
         for i, row in enumerate(rows):
             for j in range(3): self.table.setItem(i, j, QtWidgets.QTableWidgetItem(row[j]))
     def _save(self):
-        fn, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Protocol 저장", os.path.join(os.getcwd(), "protocol.protocol"), "*.protocol")
+        fn, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save Protocol", os.path.join(os.getcwd(), "protocol.protocol"), "*.protocol")
         if not fn: return
         if not fn.lower().endswith('.protocol'): fn += '.protocol'
         with open(fn, 'w', encoding='utf-8') as f:
@@ -51,7 +51,7 @@ class ProtocolTab(QtWidgets.QWidget):
                 row = [self.table.item(i, j).text() if self.table.item(i, j) else '' for j in range(3)]
                 f.write('\t'.join(row) + '\n')
 
-# 단독 실행용
+# For standalone execution
 if __name__ == '__main__':
     from PyQt5 import QtWidgets
     import sys

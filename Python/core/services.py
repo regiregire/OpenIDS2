@@ -1,15 +1,17 @@
 # core/services.py
-import os, time, glob
-from typing import Any, Optional, List, Tuple
+import os
+import time
+from typing import Any, Optional, List, Dict
 from PyQt5 import QtCore
-from .arduino_linker import ArduinoLink
+
+from core.arduino_linker import ArduinoLink
 
 
 class SynthesisManager(QtCore.QObject):
     """
-    합성 프로세스를 백그라운드에서 관리하고 UI에 진행 상황을 알립니다.
+    Manages the synthesis process in the background and reports progress to the UI.
     """
-    status_updated = QtCore.pyqtSignal(int, str)
+    status_updated = QtCore.pyqtSignal(int, int)
     synthesis_finished = QtCore.pyqtSignal()
     log_message = QtCore.pyqtSignal(str)
 
@@ -32,7 +34,7 @@ class SynthesisManager(QtCore.QObject):
             self.log_message.emit("[ERR] Protocol is not set.")
             return
         if self._total_cycles <= 0:
-            self.log_message.emit("[ERR] Sequence folder with valid cycle files is not loaded.")
+            self.log_message.emit("[ERR] Sequence file with valid cycles is not loaded.")
             return
         if self.s.arduino is None:
             self.log_message.emit("[ERR] Arduino is not connected.")
@@ -42,7 +44,7 @@ class SynthesisManager(QtCore.QObject):
             self.s.arduino,
             self._protocol,
             self._total_cycles,
-            self.s.sequence_dir_path  # 시퀀스 폴더 경로 전달
+            self.s.sequence_file_path
         )
         self._worker.status_updated.connect(self.status_updated)
         self._worker.finished.connect(self._on_worker_finished)
@@ -51,7 +53,7 @@ class SynthesisManager(QtCore.QObject):
         self.log_message.emit("[RUN] Synthesis started.")
 
     def toggle_pause_resume(self):
-        """일시정지 상태를 토글합니다."""
+        """Toggles the pause state."""
         if not self._worker or not self._worker.isRunning():
             return
 
@@ -67,7 +69,7 @@ class SynthesisManager(QtCore.QObject):
     def stop_synthesis(self):
         if self._worker and self._worker.isRunning():
             if self._is_paused:
-                self.toggle_pause_resume()  # 재개하여 루프를 빠져나오게 함
+                self.toggle_pause_resume()
             self._worker.requestInterruption()
             self.log_message.emit("[STOP] Stop request sent.")
 
@@ -79,15 +81,16 @@ class SynthesisManager(QtCore.QObject):
 
 
 class SynthesisWorker(QtCore.QThread):
-    status_updated = QtCore.pyqtSignal(int, str)
+    status_updated = QtCore.pyqtSignal(int, int)
     log_message = QtCore.pyqtSignal(str)
 
-    def __init__(self, arduino_link, protocol, total_cycles, sequence_path):
+    def __init__(self, arduino_link, protocol, total_cycles, sequence_filepath):
         super().__init__()
         self.arduino = arduino_link
         self.protocol = protocol
         self.total_cycles = total_cycles
-        self.sequence_path = sequence_path  # 시퀀스 폴더 경로 저장
+        self.sequence_filepath = sequence_filepath
+        self.sequence_data: Dict[int, List[str]] = {}
         self._is_paused = False
         self._mutex = QtCore.QMutex()
 
@@ -99,80 +102,222 @@ class SynthesisWorker(QtCore.QThread):
         with QtCore.QMutexLocker(self._mutex):
             self._is_paused = False
 
-    def run(self):
+    def _load_and_parse_sequence_file(self) -> bool:
+        """Pre-reads the sequence file, parses data for each cycle, and stores it."""
         try:
+            with open(self.sequence_filepath, 'r', encoding='utf-8') as f:
+                current_cycle = -1
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if line.lower().startswith("cycle :"):
+                        current_cycle = int(line.split(':')[1].strip())
+                        if current_cycle not in self.sequence_data:
+                            self.sequence_data[current_cycle] = []
+                    elif line.lower().startswith("head_"):
+                        if current_cycle == -1:
+                            current_cycle = 1
+                            if current_cycle not in self.sequence_data:
+                                self.sequence_data[current_cycle] = []
+                        self.sequence_data[current_cycle].append(line)
+
+            if not self.sequence_data:
+                self.log_message.emit(
+                    f"[WARN] No valid data found in sequence file: {os.path.basename(self.sequence_filepath)}")
+                return True
+
+            self.log_message.emit(
+                f"[INFO] Successfully loaded and parsed sequence file: {os.path.basename(self.sequence_filepath)}")
+            return True
+        except Exception as e:
+            self.log_message.emit(f"[ERR] Failed to load or parse sequence file: {e}")
+            return False
+
+    def run(self):
+        if not self._load_and_parse_sequence_file():
+            return
+
+        try:
+            self.arduino.send(f"linear_init;")
+            self.log_message.emit(f"  [SEND] linear_init")
+            resp = ""
+            while (resp != "OK"):
+                self.arduino.send(f"is_ready;")
+                resp = self.arduino.read_line(1)
+                print(resp)
+                self.msleep(50)
+
             for cycle in range(1, self.total_cycles + 1):
                 if self.isInterruptionRequested(): break
                 self.log_message.emit(f"--- Starting Cycle {cycle}/{self.total_cycles} ---")
-
+                step_num = 0
                 for step, vol, inc in self.protocol:
+                    step_num += 1
                     if self.isInterruptionRequested(): break
 
-                    # 일시정지 확인 로직
                     while True:
                         with QtCore.QMutexLocker(self._mutex):
                             if not self._is_paused:
                                 break
                         self.sleep(1)
 
-                    self.status_updated.emit(cycle, step)
+                    self.status_updated.emit(cycle, step_num)
                     self.log_message.emit(f"Cycle {cycle}, Step {step}, Vol {vol}, Inc {inc}")
 
-                    # --- 'coupling' 단계 특별 처리 ---
                     if step.lower() == 'coupling':
-                        base_map = {
-                            'ACT': 0x13, 'A': 0x14, 'T': 0x15, 'G': 0x16, 'C': 0x17
-                        }
 
-                        for base, slave_addr in base_map.items():
+                        try:
+                            self.arduino.send(f"linear_init;")
+                            self.log_message.emit(f"  [SEND] linear_init")
+                            resp = ""
+                            while (resp != "OK"):
+                                self.arduino.send(f"is_ready;")
+                                resp = self.arduino.read_line(1)
+                                print(resp)
+                                self.msleep(50)
+
+                        except:
+                            pass
+
+                        data_lines_for_cycle = self.sequence_data.get(cycle, [])
+                        if not data_lines_for_cycle:
+                            self.log_message.emit(f"[INFO] Cycle {cycle}: No coupling data found, skipping.")
+                            continue
+
+                        self.log_message.emit(
+                            f"  > Coupling: Processing {len(data_lines_for_cycle)} lines for cycle {cycle}.")
+
+                        self.arduino.send(f"ph_power_up;")
+                        self.log_message.emit(f"  [SEND] ph_power_up")
+                        resp = ""
+                        while (resp != "OK"):
+                            self.arduino.send(f"is_ready;")
+                            resp = self.arduino.read_line(1)
+                            print(resp)
+                            self.msleep(50)
+
+                        for line in data_lines_for_cycle:
                             if self.isInterruptionRequested(): break
 
-                            file_pattern = os.path.join(self.sequence_path, f"{cycle}_{base}.*")
-                            found_files = glob.glob(file_pattern)
-
-                            if not found_files:
-                                self.log_message.emit(
-                                    f"[INFO] Cycle {cycle}, Base {base}: Skip, file not found for pattern {file_pattern}")
-                                continue
-
-                            filepath = found_files[0]
-                            self.log_message.emit(
-                                f"  > Coupling: Processing {os.path.basename(filepath)} for slave 0x{slave_addr:02X}")
-
                             try:
-                                with open(filepath, 'rb') as f:
-                                    line_num = 0
-                                    while True:
-                                        chunk = f.read(16)
-                                        if not chunk:
-                                            break
-                                        if len(chunk) < 16:
-                                            chunk += b'\x00' * (16 - len(chunk))
+                                command = f"{line};"
+                                self.arduino.send(command)
 
-                                        # 아두이노로 라인 전송하고 응답 확인
-                                        response = self.arduino.query_line(slave_addr, chunk)
-                                        if response and "OK" in response:
-                                            # 성공 로그는 너무 많으므로 필요 시 주석 해제
-                                            # self.log_message.emit(f"    Line {line_num}: OK")
-                                            pass
-                                        else:
-                                            self.log_message.emit(
-                                                f"    [ERR] Line {line_num}: Master response: {response}")
-                                            # 필요하다면 여기서 전송을 중단하거나 재시도 로직 추가
+                                MAX_ATTEMPTS = 15
+                                attempts = 0
+                                response_ok = False
+                                response_buffer = ""  # Buffer variable to accumulate received data
 
-                                        line_num += 1
-                                        self.msleep(5)  # I2C 통신을 위한 최소한의 딜레이
+                                while attempts < MAX_ATTEMPTS:
+                                    if self.isInterruptionRequested():
+                                        self.log_message.emit("    [INFO] Stop requested during wait.")
+                                        break
 
-                            except IOError as e:
-                                self.log_message.emit(f"[ERR] Failed to read {filepath}: {e}")
+                                    resp = self.arduino.read_line(1)
+                                    attempts += 1
+
+                                    if resp is None:
+                                        self.log_message.emit(
+                                            f"    [WAIT] Attempt {attempts}/{MAX_ATTEMPTS}: No response from Master.")
+                                        continue
+
+                                    # Add the received data piece to the buffer
+                                    cleaned_resp = resp.strip()
+                                    response_buffer += cleaned_resp
+                                    # self.log_message.emit(
+                                    #    f"    [RECV] Got data: '{cleaned_resp}'. Buffer is now: '{response_buffer}'")
+
+                                    # Check if the entire buffer contains "OK" or "ERROR"
+                                    if "K" in response_buffer:
+                                        response_ok = True
+                                        break
+                                    elif "ERROR" in response_buffer:
+                                        self.log_message.emit(
+                                            f"    [FATAL] Master reported an error: {response_buffer}. Stopping synthesis.")
+                                        self.requestInterruption()
+                                        break
+
+                                # --- End of response processing logic ---
+
+                                if not response_ok and not self.isInterruptionRequested():
+                                    self.log_message.emit(
+                                        f"    [FATAL] Timeout: Master did not respond with 'OK' after {MAX_ATTEMPTS} seconds. Stopping synthesis.")
+                                    self.requestInterruption()
+
+                            except Exception as e:
+                                self.log_message.emit(f"    [ERR] Failed to process line '{line}': {e}")
+
+                        self.arduino.send(f"ph_power_down;")
+                        self.log_message.emit(f"  [SEND] ph_power_down")
+                        resp = ""
+                        while (resp != "OK"):
+                            self.arduino.send(f"is_ready;")
+                            resp = self.arduino.read_line(1)
+                            print(resp)
+                            self.msleep(50)
+
+                        self.arduino.send(f"Lwaste;")
+                        self.log_message.emit(f"  [SEND] Lwaste")
+                        resp = ""
+                        while (resp != "OK"):
+                            self.arduino.send(f"is_ready;")
+                            resp = self.arduino.read_line(1)
+                            print(resp)
+                            self.msleep(50)
+
+
+
+                    elif step.lower() == 'blow':
+                        self.arduino.send(f"blow;")
+                        self.log_message.emit(f"  [SEND] blow")
+                        resp = ""
+                        while (resp != "OK"):
+                            self.arduino.send(f"is_ready;")
+                            resp = self.arduino.read_line(1)
+                            print(resp)
+                            self.msleep(50)
+
+
+
+
+
+                    elif step.lower() == 'waste':
+                        self.arduino.send(f"Lwaste;")
+                        self.log_message.emit(f"  [SEND] Lwaste")
+                        resp = ""
+                        while (resp != "OK"):
+                            self.arduino.send(f"is_ready;")
+                            resp = self.arduino.read_line(1)
+                            print(resp)
+                            self.msleep(50)
+
+
                     else:
-                        command_str = f"bulk_{step}_{int(vol)}"
+                        command_str = f"bulk_{step}_{int(vol)};"
                         self.arduino.send(command_str)
+                        self.log_message.emit(f"  [SEND] Sending bulk command: {command_str}")
+                        resp = ""
+                        while (resp != "OK"):
+                            self.arduino.send(f"is_ready;")
+                            resp = self.arduino.read_line(1)
+                            print(resp)
+                            self.msleep(50)
 
-                    if inc < 0.5:
-                        self.msleep(500)
+                    # Incubation time
+                    if inc < 0.05:  # Handle very short times with msleep
+                        self.msleep(50)
                     else:
                         self.sleep(int(inc))
+
+            self.arduino.send(f"bulk_wash_{int(500)};")
+            self.log_message.emit(f"  [SEND] Sending bulk command: bulk_wash_{int(500)};")
+            resp = ""
+            while (resp != "OK"):
+                self.arduino.send(f"is_ready;")
+                resp = self.arduino.read_line(1)
+                print(resp)
+                self.msleep(50)
 
         except Exception as e:
             self.log_message.emit(f"[ERR] Worker failed: {e}")
@@ -183,7 +328,7 @@ class Services:
         self.bus = bus
         self.arduino: Optional[ArduinoLink] = None
         self.synthesis_manager = SynthesisManager(self)
-        self.sequence_dir_path = ""
+        self.sequence_file_path = ""
 
         if port is None:
             ports = ArduinoLink.list_ports()
@@ -193,7 +338,7 @@ class Services:
             try:
                 self.arduino = ArduinoLink.autodetect_openids_arduino()
                 if self.arduino:
-                    self.arduino.ensure_semicolon = True
+                    # self.arduino.ensure_semicolon = True # May be necessary depending on the linker
                     self.arduino.open()
                     print(f"[Services] Arduino open: {self.arduino.port_name} @ {self.arduino.baudrate}")
                 else:
@@ -217,25 +362,37 @@ class Services:
                         print(f"[Services] Warning: Skipping malformed line '{line}': {e}")
         return protocol_list
 
-    def load_sequence_directory(self, dir_path: str) -> int:
-        print(f"[Services] Loading sequence directory: {dir_path}")
-        self.sequence_dir_path = dir_path
+    def load_sequence_file(self, filepath: str) -> int:
+        print(f"[Services] Loading sequence file: {filepath}")
+
+        if not os.path.exists(filepath):
+            print(f"[Services] Error: File not found at {filepath}")
+            self.sequence_file_path = ""
+            return 0
+
+        self.sequence_file_path = filepath
+        print(f"[Services] Sequence file set to: {self.sequence_file_path}")
 
         max_cycle = 0
-        if not os.path.isdir(dir_path):
-            return 0
         try:
-            for filename in os.listdir(dir_path):
-                if os.path.isfile(os.path.join(dir_path, filename)):
-                    try:
-                        cycle_num = int(filename.split('_')[0])
-                        if cycle_num > max_cycle:
-                            max_cycle = cycle_num
-                    except (ValueError, IndexError):
-                        continue
+            with open(self.sequence_file_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line.lower().startswith("cycle :"):
+                        try:
+                            cycle_num = int(line.split(':')[1].strip())
+                            if cycle_num > max_cycle:
+                                max_cycle = cycle_num
+                        except (ValueError, IndexError):
+                            print(f"[Services] Warning: Could not parse cycle number from line: '{line}'")
+                            continue
         except Exception as e:
-            print(f"[Services] Error counting cycles in {dir_path}: {e}")
+            print(f"[Services] Error parsing cycles from {self.sequence_file_path}: {e}")
             return 0
 
-        return max_cycle
+        if max_cycle == 0 and os.path.getsize(filepath) > 0:
+            print("[Services] No 'cycle :' line found. Assuming 1 cycle.")
+            max_cycle = 1
 
+        print(f"[Services] Max cycle found in file: {max_cycle}")
+        return max_cycle
